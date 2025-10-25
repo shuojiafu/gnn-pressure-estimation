@@ -15,7 +15,7 @@ import argparse
 
 #define a dummy configs
 parser = argparse.ArgumentParser()
-parser.add_argument('--wn_inp_path', default = r'G:\Other computers\My Laptop\PhD\Codebase\signal-recovery\inputs\ctown.inp', type = str, help = 'water EPANET INPUT path')
+parser.add_argument('--wn_inp_path', default = 'inputs/ctown.inp', type = str, help = 'water EPANET INPUT path')
 parser.add_argument('--config_variant', default = '7v1', type = str, help = 'additional name for config')
 parser.add_argument('--num_scenarios', default = 10,type=float,help='number of generated scenarios')
 
@@ -235,7 +235,7 @@ def print_config(config: ConfigParser):
       print(f'{k} : {v}')
 
 if __name__=='__main__':
-  config,config_path = create_dummy_config(config_dir_path=r'configs\v7.1')
+  config,config_path = create_dummy_config(config_dir_path='configs/v7.1')
   print(f'Config path = {config_path}')
   print_config(config=config)
 
