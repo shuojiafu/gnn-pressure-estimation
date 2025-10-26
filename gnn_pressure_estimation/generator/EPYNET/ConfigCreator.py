@@ -67,7 +67,7 @@ parser.add_argument('--res_head_hi', default = 30,type=float,help='highest reser
 parser.add_argument('--head_add_ele', default = True,type=float,help='total_head = ele_head + pressure_head. This flag allows the ele head addition')
 
 
-args = parser.parse_args([])
+args = parser.parse_args() if __name__ == '__main__' else parser.parse_args([])
 
 
 def get_range(arr: np.ndarray,lo: float,hi:float,is_quantile:bool=False)-> tuple[np.ndarray,np.ndarray]:
