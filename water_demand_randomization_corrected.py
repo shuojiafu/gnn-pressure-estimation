@@ -205,7 +205,13 @@ while saved < num_events:
     # Optional: Add elevation as node feature (useful for GNN input)
     elevations = {}
     for node_name in wn.node_name_list:
-        elevations[node_name] = wn.get_node(node_name).elevation
+        node = wn.get_node(node_name)
+        # Reservoirs don't have elevation, they have head_timeseries
+        if hasattr(node, 'elevation'):
+            elevations[node_name] = node.elevation
+        else:
+            # For reservoirs, use base head value as "elevation"
+            elevations[node_name] = node.head_timeseries.base_value if hasattr(node, 'head_timeseries') else 0.0
     node_data["elevation"] = pd.Series(elevations)
 
     # Link simulation outputs
