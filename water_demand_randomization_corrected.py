@@ -196,6 +196,12 @@ while saved < num_events:
         realized[j] = val
     node_data["demand_t0"] = pd.Series(realized)
 
+    # Optional: Add elevation as node feature (useful for GNN input)
+    elevations = {}
+    for node_name in wn.node_name_list:
+        elevations[node_name] = wn.get_node(node_name).elevation
+    node_data["elevation"] = pd.Series(elevations)
+
     link_cols = {}
     for key in ("flowrate", "velocity"):
         if key in results.link:
