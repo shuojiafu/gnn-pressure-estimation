@@ -166,10 +166,16 @@ while saved < num_events:
             except Exception:
                 pass
 
-    # 6) One-step hydraulic simulation
-    ht = wn.options.time.hydraulic_timestep
-    wn.options.time.duration = ht
-    wn.options.time.report_timestep = ht
+    # 6) One-step hydraulic simulation (matching GNN approach - Executorv7.py:193-199)
+    # Set all time parameters to 1 second for single-snapshot steady-state
+    wn.options.time.duration = 1
+    wn.options.time.hydraulic_timestep = 1
+    wn.options.time.quality_timestep = 1
+    wn.options.time.pattern_timestep = 1
+    wn.options.time.pattern_start = 1
+    wn.options.time.report_timestep = 1
+    wn.options.time.report_start = 1
+    wn.options.time.rule_timestep = 1
 
     sim = wntr.sim.WNTRSimulator(wn)
     results = sim.run_sim()
