@@ -202,11 +202,65 @@ while saved < num_events:
         elevations[node_name] = wn.get_node(node_name).elevation
     node_data["elevation"] = pd.Series(elevations)
 
+    # Link simulation outputs
     link_cols = {}
     for key in ("flowrate", "velocity"):
         if key in results.link:
             link_cols[key] = results.link[key].iloc[-1]
     link_data = pd.DataFrame(link_cols) if link_cols else pd.DataFrame(index=wn.link_name_list)
+
+    # Add link input features (parameters that were randomized)
+    link_params = {
+        'diameter': {},
+        'length': {},
+        'roughness': {},
+        'status': {},
+        'link_type': {}
+    }
+
+    # Pipes
+    for pname in wn.pipe_name_list:
+        pipe = wn.get_link(pname)
+        link_params['diameter'][pname] = pipe.diameter
+        link_params['length'][pname] = pipe.length
+        link_params['roughness'][pname] = pipe.roughness
+        link_params['status'][pname] = pipe.initial_status.name if hasattr(pipe.initial_status, 'name') else str(pipe.initial_status)
+        link_params['link_type'][pname] = 'PIPE'
+
+    # Pumps
+    for pname in wn.pump_name_list:
+        pump = wn.get_link(pname)
+        link_params['diameter'][pname] = None  # Pumps don't have diameter in WNTR
+        link_params['length'][pname] = None
+        link_params['roughness'][pname] = None
+        link_params['status'][pname] = pump.initial_status.name if hasattr(pump.initial_status, 'name') else str(pump.initial_status)
+        link_params['link_type'][pname] = 'PUMP'
+        # Add pump-specific parameter
+        try:
+            link_data.loc[pname, 'pump_speed'] = pump.speed_timeseries.base_value
+        except:
+            link_data.loc[pname, 'pump_speed'] = None
+
+    # Valves
+    for vname in wn.valve_name_list:
+        valve = wn.get_link(vname)
+        try:
+            link_params['diameter'][vname] = valve.diameter
+        except:
+            link_params['diameter'][vname] = None
+        link_params['length'][vname] = None
+        link_params['roughness'][vname] = None
+        link_params['status'][vname] = valve.initial_status.name if hasattr(valve.initial_status, 'name') else str(valve.initial_status)
+        link_params['link_type'][vname] = f'VALVE_{valve.valve_type}'
+        # Add valve-specific parameters
+        if hasattr(valve, 'setting'):
+            link_data.loc[vname, 'valve_setting'] = valve.setting
+        else:
+            link_data.loc[vname, 'valve_setting'] = None
+
+    # Add all link parameters to link_data
+    for param_name, param_dict in link_params.items():
+        link_data[param_name] = pd.Series(param_dict)
 
     out_path = os.path.join(out_dir, f"data_{saved}.pkl")
     with open(out_path, "wb") as f:
