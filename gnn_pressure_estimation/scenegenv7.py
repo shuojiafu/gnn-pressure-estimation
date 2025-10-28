@@ -298,15 +298,15 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--pressure_lowerbound",
-        default=None,
+        default=0.0,
         type=float,
-        help="threshold value to filter small pressure values - 5mH2O - 7.1 psi. Set None if unused",
+        help="threshold value to filter small pressure values - 0mH2O minimum. Set None if unused",
     )
     parser.add_argument(
         "--pressure_upperbound",
-        default=None,
+        default=151.0,
         type=float,
-        help="threshold value to filter high pressure values - 100mH2O - 142.23 psi. Set None if unused",
+        help="threshold value to filter high pressure values - 151mH2O maximum. Set None if unused",
     )
     parser.add_argument("--flowrate_threshold", default=None, type=float, help="threshold value to filter valid flowarate values")
     parser.add_argument("--mean_cv_threshold", default=None, type=float, help="5.0 threshold value to filter high cv")
