@@ -20,6 +20,7 @@ import pandas as pd
 from epynet import epanet2
 from copy import deepcopy
 from gnn_pressure_estimation.utils.auxil import scale, nx_to_pyg
+from gnn_pressure_estimation.utils.graph_normalization import convert_wntr_graph_to_undirected
 
 
 from typing import Optional, Union, Any
@@ -231,9 +232,9 @@ class WDNDataset(Dataset):
         else:
             link_weight_dict = None
 
-        # graph = wn.to_graph(link_weight= link_weight_dict).to_undirected()
-
-        graph = nx.Graph(wn.to_graph(link_weight=link_weight_dict)).to_undirected()
+        # Convert directed graph to undirected, properly handling pump/valve directions
+        directed_graph = wn.to_graph(link_weight=link_weight_dict)
+        graph = convert_wntr_graph_to_undirected(directed_graph)
 
         keep_list = get_keep_list(wn=wn, removal=removal, root=root, feature=feature)
 
@@ -294,8 +295,9 @@ class NoisyWDNDataset(WDNDataset):
         else:
             link_weight_dict = None
 
-        # graph = wn.to_graph(link_weight= link_weight_dict).to_undirected()
-        graph = nx.Graph(wn.to_graph(link_weight=link_weight_dict)).to_undirected()
+        # Convert directed graph to undirected, properly handling pump/valve directions
+        directed_graph = wn.to_graph(link_weight=link_weight_dict)
+        graph = convert_wntr_graph_to_undirected(directed_graph)
 
         keep_list = get_keep_list(wn=wn, removal=removal, root=None, feature=feature)
 

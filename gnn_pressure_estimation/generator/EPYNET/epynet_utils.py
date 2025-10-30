@@ -22,17 +22,17 @@ def get_networkx_graph(wn,include_reservoir=True,graph_type='multi_directed'):
     :param Epynet.Network wn: water network object
     :param bool include_reservoir: Flag indicates involve links from reservoirs, defaults to True
     """
-    if graph_type == 'undirected':
-        G = nx.Graph()
+    # First create a directed graph to track proper directions
+    if graph_type in ['undirected', 'multi_undirected']:
+        # Create directed first, then convert
+        G_directed = nx.DiGraph() if graph_type == 'undirected' else nx.MultiDiGraph()
     elif graph_type == 'directed':
-        G = nx.DiGraph()
-    elif graph_type == 'multi_undirected':
-        G = nx.MultiGraph()
-    elif  graph_type == 'multi_directed':
-        G = nx.MultiDiGraph()
+        G_directed = nx.DiGraph()
+    elif graph_type == 'multi_directed':
+        G_directed = nx.MultiDiGraph()
     else:
         raise NotImplementedError()
-    
+
     node_list = []
     collection = wn.junctions if not include_reservoir else wn.nodes
     for node in collection:
@@ -41,21 +41,50 @@ def get_networkx_graph(wn,include_reservoir=True,graph_type='multi_directed'):
 
     for pipe in wn.pipes:
         if (pipe.from_node.uid in node_list) and (pipe.to_node.uid in node_list):
-            G.add_edge(pipe.from_node.uid, pipe.to_node.uid, weight=1., length=pipe.length)
+            G_directed.add_edge(
+                pipe.from_node.uid,
+                pipe.to_node.uid,
+                weight=1.,
+                length=pipe.length,
+                link_type='Pipe',
+                link_id=pipe.uid
+            )
         else:
             print(f'WARNING! pipe {pipe.uid} is not connect to any node in node list')
+
     for pump in wn.pumps:
         if (pump.from_node.uid in node_list) and (pump.to_node.uid in node_list):
-            G.add_edge(pump.from_node.uid, pump.to_node.uid, weight=1., length=0.)
+            G_directed.add_edge(
+                pump.from_node.uid,
+                pump.to_node.uid,
+                weight=1.,
+                length=0.,
+                link_type='Pump',
+                link_id=pump.uid
+            )
         else:
             print(f'WARNING! pump {pump.uid} is not connect to any node in node list')
+
     for valve in wn.valves:
         if (valve.from_node.uid in node_list) and (valve.to_node.uid in node_list):
-            G.add_edge(valve.from_node.uid, valve.to_node.uid, weight=1., length=0.)
+            G_directed.add_edge(
+                valve.from_node.uid,
+                valve.to_node.uid,
+                weight=1.,
+                length=0.,
+                link_type='Valve',
+                link_id=valve.uid
+            )
         else:
             print(f'WARNING! valve {valve.uid} is not connect to any node in node list')
-    
-    return G
+
+    # If undirected is requested, convert properly
+    if graph_type in ['undirected', 'multi_undirected']:
+        from gnn_pressure_estimation.utils.graph_normalization import convert_wntr_graph_to_undirected
+        G = convert_wntr_graph_to_undirected(G_directed)
+        return G
+
+    return G_directed
 
 
 
