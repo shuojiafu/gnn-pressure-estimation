@@ -77,51 +77,68 @@ class WaterNetworkGraphConverter:
         for node, attrs in directed_graph.nodes(data=True):
             undirected_graph.add_node(node, **attrs)
 
-        # Process each edge in the directed graph
+        # First pass: Add all edges from directed graph with their original types
+        print("=" * 60)
+        print("Processing Directed Graph Edges")
+        print("=" * 60)
+
         for u, v, edge_data in directed_graph.edges(data=True):
             # Get component type from edge attributes
             component_type = edge_data.get(component_type_attr, 'pipe').lower()
 
             # Copy all edge attributes
-            base_attrs = deepcopy(edge_data)
+            forward_attrs = deepcopy(edge_data)
 
+            # Set edge type based on component type
             if component_type == 'pipe':
-                # Pipes are truly undirected - add single edge
-                base_attrs['edge_type'] = self.EDGE_TYPE_PIPE
-                undirected_graph.add_edge(u, v, **base_attrs)
-
+                forward_attrs['edge_type'] = self.EDGE_TYPE_PIPE
+                forward_attrs['direction'] = 'original'
             elif component_type == 'pump':
-                # Pumps need forward and reverse edges
-                # Forward direction (u -> v)
-                forward_attrs = deepcopy(base_attrs)
                 forward_attrs['edge_type'] = self.EDGE_TYPE_PUMP
                 forward_attrs['direction'] = 'forward'
-                undirected_graph.add_edge(u, v, **forward_attrs)
+            elif component_type == 'valve':
+                forward_attrs['edge_type'] = self.EDGE_TYPE_VALVE
+                forward_attrs['direction'] = 'forward'
+            else:
+                # Unknown type - treat as pipe
+                forward_attrs['edge_type'] = self.EDGE_TYPE_PIPE
+                forward_attrs['direction'] = 'original'
 
-                # Reverse direction (v -> u)
-                reverse_attrs = deepcopy(base_attrs)
+            # Add the edge
+            undirected_graph.add_edge(u, v, **forward_attrs)
+            print(f"Added edge: {u} -> {v} | Type: {forward_attrs['edge_type']}")
+
+        # Second pass: Add reverse edges only for pumps and valves (not pipes)
+        print("\n" + "=" * 60)
+        print("Adding Reverse Edges for Pumps and Valves")
+        print("=" * 60)
+
+        for u, v, edge_data in directed_graph.edges(data=True):
+            component_type = edge_data.get(component_type_attr, 'pipe').lower()
+
+            if component_type == 'pipe':
+                # Pipes: do nothing (already added as undirected)
+                print(f"Skipped reverse for pipe: {u} -> {v} (pipes are undirected)")
+
+            elif component_type == 'pump':
+                # Pumps: add reverse edge
+                reverse_attrs = deepcopy(edge_data)
                 reverse_attrs['edge_type'] = self.EDGE_TYPE_PUMP_REVERSE
                 reverse_attrs['direction'] = 'reverse'
                 undirected_graph.add_edge(v, u, **reverse_attrs)
+                print(f"Added reverse: {v} <- {u} | Type: {reverse_attrs['edge_type']}")
 
             elif component_type == 'valve':
-                # Valves need forward and reverse edges
-                # Forward direction (u -> v)
-                forward_attrs = deepcopy(base_attrs)
-                forward_attrs['edge_type'] = self.EDGE_TYPE_VALVE
-                forward_attrs['direction'] = 'forward'
-                undirected_graph.add_edge(u, v, **forward_attrs)
-
-                # Reverse direction (v -> u)
-                reverse_attrs = deepcopy(base_attrs)
+                # Valves: add reverse edge
+                reverse_attrs = deepcopy(edge_data)
                 reverse_attrs['edge_type'] = self.EDGE_TYPE_VALVE_REVERSE
                 reverse_attrs['direction'] = 'reverse'
                 undirected_graph.add_edge(v, u, **reverse_attrs)
+                print(f"Added reverse: {v} <- {u} | Type: {reverse_attrs['edge_type']}")
 
-            else:
-                # Unknown type - treat as pipe
-                base_attrs['edge_type'] = self.EDGE_TYPE_PIPE
-                undirected_graph.add_edge(u, v, **base_attrs)
+        print("=" * 60)
+        print(f"Total edges in undirected graph: {undirected_graph.number_of_edges()}")
+        print("=" * 60 + "\n")
 
         return undirected_graph
 
@@ -153,6 +170,11 @@ class WaterNetworkGraphConverter:
                 elevation=getattr(node, 'elevation', 0)
             )
 
+        # First pass: Add all edges with their original types
+        print("=" * 60)
+        print("Processing WNTR Water Network Model")
+        print("=" * 60)
+
         # Process pipes - undirected
         for pipe in wn_model.pipes:
             undirected_graph.add_edge(
@@ -160,15 +182,16 @@ class WaterNetworkGraphConverter:
                 pipe.end_node_name,
                 component_type='pipe',
                 edge_type=self.EDGE_TYPE_PIPE,
+                direction='original',
                 length=pipe.length,
                 diameter=pipe.diameter,
                 roughness=pipe.roughness,
                 component_name=pipe.name
             )
+            print(f"Added pipe: {pipe.start_node_name} -> {pipe.end_node_name}")
 
-        # Process pumps - forward and reverse
+        # Process pumps - forward direction
         for pump in wn_model.pumps:
-            # Forward pump
             undirected_graph.add_edge(
                 pump.start_node_name,
                 pump.end_node_name,
@@ -179,22 +202,10 @@ class WaterNetworkGraphConverter:
                 component_name=pump.name,
                 pump_type=pump.pump_type
             )
+            print(f"Added pump: {pump.start_node_name} -> {pump.end_node_name}")
 
-            # Reverse pump
-            undirected_graph.add_edge(
-                pump.end_node_name,
-                pump.start_node_name,
-                component_type='pump',
-                edge_type=self.EDGE_TYPE_PUMP_REVERSE,
-                direction='reverse',
-                length=0.0,
-                component_name=pump.name,
-                pump_type=pump.pump_type
-            )
-
-        # Process valves - forward and reverse
+        # Process valves - forward direction
         for valve in wn_model.valves:
-            # Forward valve
             undirected_graph.add_edge(
                 valve.start_node_name,
                 valve.end_node_name,
@@ -206,8 +217,29 @@ class WaterNetworkGraphConverter:
                 component_name=valve.name,
                 valve_type=valve.valve_type
             )
+            print(f"Added valve: {valve.start_node_name} -> {valve.end_node_name}")
 
-            # Reverse valve
+        # Second pass: Add reverse edges only for pumps and valves
+        print("\n" + "=" * 60)
+        print("Adding Reverse Edges for Pumps and Valves")
+        print("=" * 60)
+
+        # Add reverse edges for pumps
+        for pump in wn_model.pumps:
+            undirected_graph.add_edge(
+                pump.end_node_name,
+                pump.start_node_name,
+                component_type='pump',
+                edge_type=self.EDGE_TYPE_PUMP_REVERSE,
+                direction='reverse',
+                length=0.0,
+                component_name=pump.name,
+                pump_type=pump.pump_type
+            )
+            print(f"Added pump reverse: {pump.end_node_name} <- {pump.start_node_name}")
+
+        # Add reverse edges for valves
+        for valve in wn_model.valves:
             undirected_graph.add_edge(
                 valve.end_node_name,
                 valve.start_node_name,
@@ -219,6 +251,11 @@ class WaterNetworkGraphConverter:
                 component_name=valve.name,
                 valve_type=valve.valve_type
             )
+            print(f"Added valve reverse: {valve.end_node_name} <- {valve.start_node_name}")
+
+        print("=" * 60)
+        print(f"Total edges in undirected graph: {undirected_graph.number_of_edges()}")
+        print("=" * 60 + "\n")
 
         return undirected_graph
 
@@ -249,6 +286,11 @@ class WaterNetworkGraphConverter:
                 elevation=getattr(node, 'elevation', 0)
             )
 
+        # First pass: Add all edges with their original types
+        print("=" * 60)
+        print("Processing EPYNET Network")
+        print("=" * 60)
+
         # Process pipes - undirected
         for pipe in wn_epynet.pipes:
             undirected_graph.add_edge(
@@ -256,15 +298,16 @@ class WaterNetworkGraphConverter:
                 pipe.to_node.uid,
                 component_type='pipe',
                 edge_type=self.EDGE_TYPE_PIPE,
+                direction='original',
                 length=pipe.length,
                 diameter=getattr(pipe, 'diameter', 0),
                 roughness=getattr(pipe, 'roughness', 0),
                 component_name=pipe.uid
             )
+            print(f"Added pipe: {pipe.from_node.uid} -> {pipe.to_node.uid}")
 
-        # Process pumps - forward and reverse
+        # Process pumps - forward direction
         for pump in wn_epynet.pumps:
-            # Forward pump
             undirected_graph.add_edge(
                 pump.from_node.uid,
                 pump.to_node.uid,
@@ -276,23 +319,10 @@ class WaterNetworkGraphConverter:
                 speed=getattr(pump, 'speed', 1.0),
                 status=getattr(pump, 'status', 'OPEN')
             )
+            print(f"Added pump: {pump.from_node.uid} -> {pump.to_node.uid}")
 
-            # Reverse pump
-            undirected_graph.add_edge(
-                pump.to_node.uid,
-                pump.from_node.uid,
-                component_type='pump',
-                edge_type=self.EDGE_TYPE_PUMP_REVERSE,
-                direction='reverse',
-                length=0.0,
-                component_name=pump.uid,
-                speed=getattr(pump, 'speed', 1.0),
-                status=getattr(pump, 'status', 'OPEN')
-            )
-
-        # Process valves - forward and reverse
+        # Process valves - forward direction
         for valve in wn_epynet.valves:
-            # Forward valve
             undirected_graph.add_edge(
                 valve.from_node.uid,
                 valve.to_node.uid,
@@ -305,8 +335,30 @@ class WaterNetworkGraphConverter:
                 setting=getattr(valve, 'setting', 0),
                 status=getattr(valve, 'status', 'OPEN')
             )
+            print(f"Added valve: {valve.from_node.uid} -> {valve.to_node.uid}")
 
-            # Reverse valve
+        # Second pass: Add reverse edges only for pumps and valves
+        print("\n" + "=" * 60)
+        print("Adding Reverse Edges for Pumps and Valves")
+        print("=" * 60)
+
+        # Add reverse edges for pumps
+        for pump in wn_epynet.pumps:
+            undirected_graph.add_edge(
+                pump.to_node.uid,
+                pump.from_node.uid,
+                component_type='pump',
+                edge_type=self.EDGE_TYPE_PUMP_REVERSE,
+                direction='reverse',
+                length=0.0,
+                component_name=pump.uid,
+                speed=getattr(pump, 'speed', 1.0),
+                status=getattr(pump, 'status', 'OPEN')
+            )
+            print(f"Added pump reverse: {pump.to_node.uid} <- {pump.from_node.uid}")
+
+        # Add reverse edges for valves
+        for valve in wn_epynet.valves:
             undirected_graph.add_edge(
                 valve.to_node.uid,
                 valve.from_node.uid,
@@ -319,6 +371,11 @@ class WaterNetworkGraphConverter:
                 setting=getattr(valve, 'setting', 0),
                 status=getattr(valve, 'status', 'OPEN')
             )
+            print(f"Added valve reverse: {valve.to_node.uid} <- {valve.from_node.uid}")
+
+        print("=" * 60)
+        print(f"Total edges in undirected graph: {undirected_graph.number_of_edges()}")
+        print("=" * 60 + "\n")
 
         return undirected_graph
 
