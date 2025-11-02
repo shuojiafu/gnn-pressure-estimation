@@ -107,24 +107,39 @@ def _get_valve_bounds_from_inp(wn_epynet, valve) -> Tuple[float, float] | None:
         valve_type = valve.valve_type
         original_setting = float(valve.setting)
 
+        # Handle edge case: if original setting is 0 or very small, use default ranges
+        if abs(original_setting) < 1e-6:
+            if valve_type in ['PRV', 'PSV', 'PBV']:  # Pressure valves
+                return (10.0, 100.0)  # Default pressure range
+            elif valve_type == 'FCV':  # Flow Control Valve
+                return (0.1, 10.0)  # Default flow range
+            elif valve_type in ['TCV', 'GPV']:  # Loss coefficient valves
+                return (0.0, 10.0)  # Default loss coefficient range
+            else:
+                return (0.1, 10.0)  # Default fallback
+
         # Define reasonable ranges based on valve type
         # We'll use a percentage of the original setting to create the range
         if valve_type in ['PRV', 'PSV', 'PBV']:  # Pressure valves
             # Pressure range: 50% to 150% of original setting
             min_val = max(0.1, original_setting * 0.5)
-            max_val = original_setting * 1.5
+            max_val = max(min_val + 0.1, original_setting * 1.5)  # Ensure max > min
         elif valve_type == 'FCV':  # Flow Control Valve
             # Flow range: 50% to 150% of original setting
             min_val = max(0.001, original_setting * 0.5)
-            max_val = original_setting * 1.5
+            max_val = max(min_val + 0.001, original_setting * 1.5)
         elif valve_type in ['TCV', 'GPV']:  # Loss coefficient valves
             # Loss coefficient range: use reasonable bounds
             min_val = max(0.0, original_setting * 0.5)
-            max_val = original_setting * 2.0
+            max_val = max(min_val + 0.1, original_setting * 2.0)
         else:
             # Default fallback
             min_val = max(0.001, original_setting * 0.5)
-            max_val = original_setting * 1.5
+            max_val = max(min_val + 0.1, original_setting * 1.5)
+
+        # Final sanity check
+        if max_val <= min_val:
+            max_val = min_val + 1.0
 
         return (min_val, max_val)
     except Exception as e:
