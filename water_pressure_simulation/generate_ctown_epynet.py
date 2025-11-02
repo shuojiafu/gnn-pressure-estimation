@@ -154,13 +154,28 @@ def _build_directed_graph(wn: Network, include_reservoir: bool = True) -> nx.Mul
 # ----- Compute SINGLE GLOBAL demand range from pristine network -----
 base_wn = Network(file_path)
 global_demand_lo, global_demand_hi = _compute_global_demand_range(base_wn)
+# Close the base network to free up file handles
+try:
+    base_wn.ep.ENclose()
+except:
+    pass
+del base_wn
 
 # ----- generate until we have num_events valid files -----
 saved = 0
 attempts = 0
 while saved < num_events:
     attempts += 1
+    # Create unique report/binary files for each attempt to avoid file locking on Windows
+    import tempfile
+    temp_dir = tempfile.gettempdir()
+    rpt_file = os.path.join(temp_dir, f"epynet_{os.getpid()}_{attempts}.rpt")
+    bin_file = os.path.join(temp_dir, f"epynet_{os.getpid()}_{attempts}.bin")
+
     wn = Network(file_path)
+    # Override the default report/binary file paths
+    wn.rptfile = rpt_file
+    wn.binfile = bin_file
 
     # 1) Junction demand: EACH junction randomized within SAME GLOBAL [min,max]
     #    This matches TokenGeneratorByRange.py:275-287 where:
@@ -249,11 +264,35 @@ while saved < num_events:
         wn.solve()
     except Exception as e:
         print(f"Simulation failed: {e}")
+        # Close and cleanup before abandoning
+        try:
+            wn.ep.ENclose()
+        except:
+            pass
+        try:
+            if os.path.exists(rpt_file):
+                os.remove(rpt_file)
+            if os.path.exists(bin_file):
+                os.remove(bin_file)
+        except:
+            pass
         continue  # abandon this trial
 
     # 7) Pressure filter: discard if any pressure outside [0,151]
     pressures = wn.nodes.pressure.values
     if (pressures.min() < pressure_ok_lo) or (pressures.max() > pressure_ok_hi):
+        # Close and cleanup before abandoning
+        try:
+            wn.ep.ENclose()
+        except:
+            pass
+        try:
+            if os.path.exists(rpt_file):
+                os.remove(rpt_file)
+            if os.path.exists(bin_file):
+                os.remove(bin_file)
+        except:
+            pass
         continue  # abandon this trial
 
     # 8) Build DIRECTED graph + dataframes and save
@@ -349,5 +388,20 @@ while saved < num_events:
 
     saved += 1
     print(f"Saved {saved}/{num_events} (attempt {attempts})")
+
+    # Close network and clean up temp files
+    try:
+        wn.ep.ENclose()
+    except:
+        pass
+
+    # Clean up temporary report and binary files
+    try:
+        if os.path.exists(rpt_file):
+            os.remove(rpt_file)
+        if os.path.exists(bin_file):
+            os.remove(bin_file)
+    except:
+        pass
 
 print(f"\nComplete! Generated {num_events} valid scenarios in {attempts} attempts.")
