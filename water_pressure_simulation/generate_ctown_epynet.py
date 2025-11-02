@@ -35,6 +35,7 @@ def _set_epanet_value(obj, param_code, value):
     """
     Set EPANET parameter value directly via low-level API.
     This bypasses read-only property restrictions in EPyNet.
+    Based on epynet_utils.set_object_value_wo_ierror
 
     Args:
         obj: EPyNet Node or Link object
@@ -189,36 +190,40 @@ while saved < num_events:
         junc.basedemand = float(max(0.0, new_base))
 
     # 2) Tank levels in [min_level, max_level]
+    # Based on Executorv7.py:238
     for tank in wn.tanks:
         lo, hi = float(tank.minlevel), float(tank.maxlevel)
         if hi > lo:
-            _set_epanet_value(tank, epanet2.EN_TANKLEVEL, float(rng.uniform(lo, hi)))
+            tank_level = float(rng.uniform(lo, hi))
+            _set_epanet_value(tank, epanet2.EN_TANKLEVEL, tank_level)
 
     # 3) Reservoir head × [0.5, 2.0]
+    # Based on Executorv7.py:303-315 - they use patterns for reservoirs
     for res in wn.reservoirs:
         try:
             current_head = float(res.head) if hasattr(res, 'head') else float(res.elevation)
             new_head = current_head * float(rng.uniform(reservoir_scale_lo, reservoir_scale_hi))
-            _set_epanet_value(res, epanet2.EN_ELEVATION, new_head)
+            # Use set_object_value method like in Executorv7.py line 304
+            res.set_object_value(epanet2.EN_ELEVATION, new_head)
         except Exception as e:
             print(f"Warning: Could not set reservoir head: {e}")
 
     # 4) Pumps: status (p=0.8 OPEN), speed ∈ [0.8,1.2]
+    # Based on Executorv7.py:225 and 230 - direct assignment works!
     for pump in wn.pumps:
-        # Set initial status
-        new_status = 1 if rng.random() < pump_open_prob else 0
-        _set_epanet_value(pump, epanet2.EN_INITSTATUS, new_status)
+        # Set initial status - direct assignment (Executorv7.py:225)
+        pump.initstatus = 1 if rng.random() < pump_open_prob else 0
 
-        # Set pump speed (this is the main reason for using EPyNet!)
-        new_speed = float(rng.uniform(pump_speed_lo, pump_speed_hi))
-        _set_epanet_value(pump, epanet2.EN_PUMPSPEED, new_speed)
+        # Set pump speed - direct assignment (Executorv7.py:230)
+        pump.speed = float(rng.uniform(pump_speed_lo, pump_speed_hi))
 
     # 5) Valves: status (p=0.8 OPEN), setting within explicit [min,max] if available
+    # Based on Executorv7.py:249 and 272
     for valve in wn.valves:
-        # Set initial status
-        new_status = 1 if rng.random() < valve_open_prob else 0
-        _set_epanet_value(valve, epanet2.EN_INITSTATUS, new_status)
+        # Set initial status - direct assignment (Executorv7.py:249)
+        valve.initstatus = 1 if rng.random() < valve_open_prob else 0
 
+        # Set valve setting - needs low-level API (Executorv7.py:272)
         bounds = _valve_setting_bounds_if_available(valve)
         if bounds is not None:
             lo, hi = bounds
