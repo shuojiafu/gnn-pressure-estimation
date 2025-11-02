@@ -8,11 +8,6 @@ from epynet import epanet2
 import numpy as np
 import pandas as pd
 import networkx as nx
-import sys
-
-# Add the parent directory to path to import epynet_utils
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from gnn_pressure_estimation.generator.EPYNET import epynet_utils as eutils
 
 # ========= User settings =========
 file_path   = "inputs/ctown.inp"
@@ -84,8 +79,6 @@ def _compute_global_demand_range(wn: Network) -> Tuple[float, float]:
 
 def _valve_setting_bounds_if_available(v) -> Tuple[float, float] | None:
     """Return (min,max) if the valve exposes explicit bounds, else None (we'll skip setting)."""
-    # For EPyNet, we'll use a simple heuristic based on valve type
-    # This is a simplified version; adjust based on actual valve types in your network
     try:
         current_setting = float(v.setting)
         if current_setting > 0:
@@ -94,6 +87,33 @@ def _valve_setting_bounds_if_available(v) -> Tuple[float, float] | None:
     except:
         pass
     return None
+
+def _build_directed_graph(wn: Network, include_reservoir: bool = True) -> nx.MultiDiGraph:
+    """Build a directed MultiDiGraph from EPyNet water network."""
+    G = nx.MultiDiGraph()
+
+    # Add nodes
+    node_list = []
+    collection = wn.junctions if not include_reservoir else wn.nodes
+    for node in collection:
+        node_list.append(node.uid)
+
+    # Add edges from pipes
+    for pipe in wn.pipes:
+        if (pipe.from_node.uid in node_list) and (pipe.to_node.uid in node_list):
+            G.add_edge(pipe.from_node.uid, pipe.to_node.uid, weight=1., length=pipe.length)
+
+    # Add edges from pumps
+    for pump in wn.pumps:
+        if (pump.from_node.uid in node_list) and (pump.to_node.uid in node_list):
+            G.add_edge(pump.from_node.uid, pump.to_node.uid, weight=1., length=0.)
+
+    # Add edges from valves
+    for valve in wn.valves:
+        if (valve.from_node.uid in node_list) and (valve.to_node.uid in node_list):
+            G.add_edge(valve.from_node.uid, valve.to_node.uid, weight=1., length=0.)
+
+    return G
 
 # ----- Compute SINGLE GLOBAL demand range from pristine network -----
 base_wn = Network(file_path)
@@ -137,40 +157,35 @@ while saved < num_events:
     for tank in wn.tanks:
         lo, hi = float(tank.minlevel), float(tank.maxlevel)
         if hi > lo:
-            eutils.set_object_value_wo_ierror(tank, epanet2.EN_TANKLEVEL, float(rng.uniform(lo, hi)))
+            tank.level = float(rng.uniform(lo, hi))
 
     # 3) Reservoir head × [0.5, 2.0]
     for res in wn.reservoirs:
         try:
-            # In EPyNet, reservoir head is accessed via elevation or head property
             current_head = float(res.head) if hasattr(res, 'head') else float(res.elevation)
             new_head = current_head * float(rng.uniform(reservoir_scale_lo, reservoir_scale_hi))
-            eutils.set_object_value_wo_ierror(res, epanet2.EN_ELEVATION, new_head)
+            res.head = new_head
         except Exception as e:
             print(f"Warning: Could not set reservoir head: {e}")
 
     # 4) Pumps: status (p=0.8 OPEN), speed ∈ [0.8,1.2]
     for pump in wn.pumps:
         # Set initial status
-        new_status = 1 if rng.random() < pump_open_prob else 0
-        eutils.set_object_value_wo_ierror(pump, epanet2.EN_INITSTATUS, new_status)
+        pump.status = 1 if rng.random() < pump_open_prob else 0
 
         # Set pump speed (this is the main reason for using EPyNet!)
-        new_speed = float(rng.uniform(pump_speed_lo, pump_speed_hi))
-        eutils.set_object_value_wo_ierror(pump, epanet2.EN_PUMPSPEED, new_speed)
+        pump.speed = float(rng.uniform(pump_speed_lo, pump_speed_hi))
 
     # 5) Valves: status (p=0.8 OPEN), setting within explicit [min,max] if available
     for valve in wn.valves:
         # Set initial status
-        new_status = 1 if rng.random() < valve_open_prob else 0
-        eutils.set_object_value_wo_ierror(valve, epanet2.EN_INITSTATUS, new_status)
+        valve.status = 1 if rng.random() < valve_open_prob else 0
 
         bounds = _valve_setting_bounds_if_available(valve)
         if bounds is not None:
             lo, hi = bounds
             try:
-                new_setting = float(rng.uniform(lo, hi))
-                eutils.set_object_value_wo_ierror(valve, epanet2.EN_INITSETTING, new_setting)
+                valve.setting = float(rng.uniform(lo, hi))
             except Exception:
                 pass
 
@@ -198,7 +213,7 @@ while saved < num_events:
         continue  # abandon this trial
 
     # 8) Build DIRECTED graph + dataframes and save
-    G = eutils.get_networkx_graph(wn, include_reservoir=True, graph_type='multi_directed')
+    G = _build_directed_graph(wn, include_reservoir=True)
 
     # Node data
     heads = wn.nodes.head.values
@@ -248,7 +263,7 @@ while saved < num_events:
         link_params['diameter'][pipe.uid] = pipe.diameter
         link_params['length'][pipe.uid] = pipe.length
         link_params['roughness'][pipe.uid] = pipe.roughness
-        link_params['status'][pipe.uid] = str(pipe.initstatus)
+        link_params['status'][pipe.uid] = str(pipe.status)
         link_params['link_type'][pipe.uid] = 'PIPE'
 
     # Pumps
@@ -256,7 +271,7 @@ while saved < num_events:
         link_params['diameter'][pump.uid] = None  # Pumps don't have diameter
         link_params['length'][pump.uid] = pump.length if hasattr(pump, 'length') else None
         link_params['roughness'][pump.uid] = None
-        link_params['status'][pump.uid] = str(pump.initstatus)
+        link_params['status'][pump.uid] = str(pump.status)
         link_params['link_type'][pump.uid] = 'PUMP'
         # Add pump-specific parameter
         try:
@@ -272,7 +287,7 @@ while saved < num_events:
             link_params['diameter'][valve.uid] = None
         link_params['length'][valve.uid] = None
         link_params['roughness'][valve.uid] = None
-        link_params['status'][valve.uid] = str(valve.initstatus)
+        link_params['status'][valve.uid] = str(valve.status)
         link_params['link_type'][valve.uid] = f'VALVE_{valve.valve_type}'
         # Add valve-specific parameters
         if hasattr(valve, 'setting'):
