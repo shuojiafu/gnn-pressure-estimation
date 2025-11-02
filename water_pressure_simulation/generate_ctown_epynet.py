@@ -10,28 +10,18 @@ import pandas as pd
 import networkx as nx
 
 # ========= User settings =========
-# Get the script's directory to make paths relative to it
-# Handle both script execution and Jupyter/IPython environments
-try:
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-except NameError:
-    # Running in Jupyter/IPython - use current working directory
-    script_dir = os.getcwd()
-
-project_root = os.path.dirname(script_dir)  # Go up one level from water_pressure_simulation/
-
-file_path   = os.path.join(project_root, "inputs", "ctown.inp")
-out_dir     = os.path.join(script_dir, "ctown_data")
+file_path   = "water_pressure_simulation/ctown.inp"  # Path to your input file
+out_dir     = "water_pressure_simulation/ctown_data"  # Output directory
 
 # Print paths for debugging
+print(f"Current working directory: {os.getcwd()}")
 print(f"Looking for input file at: {file_path}")
 print(f"Output directory: {out_dir}")
 
 # Check if input file exists
 if not os.path.exists(file_path):
     print(f"\nERROR: Input file not found at: {file_path}")
-    print(f"Current working directory: {os.getcwd()}")
-    print(f"Please update the 'file_path' variable to point to your ctown.inp file")
+    print(f"Please make sure the path is correct relative to: {os.getcwd()}")
     raise FileNotFoundError(f"Cannot find input file: {file_path}")
 
 num_events  =  1             # how many valid PKLs to produce
