@@ -31,6 +31,41 @@ os.makedirs(out_dir, exist_ok=True)
 rng = np.random.default_rng(seed) if seed is not None else np.random.default_rng()
 
 # ----- small helpers -----
+def _set_epanet_value(obj, param_code, value):
+    """
+    Set EPANET parameter value directly via low-level API.
+    This bypasses read-only property restrictions in EPyNet.
+
+    Args:
+        obj: EPyNet Node or Link object
+        param_code: EPANET parameter code (e.g., epanet2.EN_TANKLEVEL)
+        value: Value to set
+    """
+    from epynet import Node, Link
+
+    wn = obj.network()
+    wn.solved = False
+    obj._values[param_code] = value
+
+    # Call the appropriate EPANET C library function
+    if isinstance(obj, Node):
+        ierr = wn.ep._lib.EN_setnodevalue(
+            wn.ep.ph,
+            epanet2.ctypes.c_int(obj.index),
+            epanet2.ctypes.c_int(param_code),
+            epanet2.ctypes.c_float(value)
+        )
+    else:  # Link
+        ierr = wn.ep._lib.EN_setlinkvalue(
+            wn.ep.ph,
+            epanet2.ctypes.c_int(obj.index),
+            epanet2.ctypes.c_int(param_code),
+            epanet2.ctypes.c_float(value)
+        )
+
+    if ierr != 0:
+        raise Exception(f"EPANET error {ierr} setting {obj.uid} param {param_code} to {value}")
+
 def _first_multiplier(pattern) -> float:
     """Get first pattern multiplier (for single-snapshot simulation)."""
     if pattern is None:
@@ -157,35 +192,39 @@ while saved < num_events:
     for tank in wn.tanks:
         lo, hi = float(tank.minlevel), float(tank.maxlevel)
         if hi > lo:
-            tank.level = float(rng.uniform(lo, hi))
+            _set_epanet_value(tank, epanet2.EN_TANKLEVEL, float(rng.uniform(lo, hi)))
 
     # 3) Reservoir head × [0.5, 2.0]
     for res in wn.reservoirs:
         try:
             current_head = float(res.head) if hasattr(res, 'head') else float(res.elevation)
             new_head = current_head * float(rng.uniform(reservoir_scale_lo, reservoir_scale_hi))
-            res.head = new_head
+            _set_epanet_value(res, epanet2.EN_ELEVATION, new_head)
         except Exception as e:
             print(f"Warning: Could not set reservoir head: {e}")
 
     # 4) Pumps: status (p=0.8 OPEN), speed ∈ [0.8,1.2]
     for pump in wn.pumps:
         # Set initial status
-        pump.status = 1 if rng.random() < pump_open_prob else 0
+        new_status = 1 if rng.random() < pump_open_prob else 0
+        _set_epanet_value(pump, epanet2.EN_INITSTATUS, new_status)
 
         # Set pump speed (this is the main reason for using EPyNet!)
-        pump.speed = float(rng.uniform(pump_speed_lo, pump_speed_hi))
+        new_speed = float(rng.uniform(pump_speed_lo, pump_speed_hi))
+        _set_epanet_value(pump, epanet2.EN_PUMPSPEED, new_speed)
 
     # 5) Valves: status (p=0.8 OPEN), setting within explicit [min,max] if available
     for valve in wn.valves:
         # Set initial status
-        valve.status = 1 if rng.random() < valve_open_prob else 0
+        new_status = 1 if rng.random() < valve_open_prob else 0
+        _set_epanet_value(valve, epanet2.EN_INITSTATUS, new_status)
 
         bounds = _valve_setting_bounds_if_available(valve)
         if bounds is not None:
             lo, hi = bounds
             try:
-                valve.setting = float(rng.uniform(lo, hi))
+                new_setting = float(rng.uniform(lo, hi))
+                _set_epanet_value(valve, epanet2.EN_INITSETTING, new_setting)
             except Exception:
                 pass
 
@@ -263,7 +302,7 @@ while saved < num_events:
         link_params['diameter'][pipe.uid] = pipe.diameter
         link_params['length'][pipe.uid] = pipe.length
         link_params['roughness'][pipe.uid] = pipe.roughness
-        link_params['status'][pipe.uid] = str(pipe.status)
+        link_params['status'][pipe.uid] = str(pipe.initstatus)
         link_params['link_type'][pipe.uid] = 'PIPE'
 
     # Pumps
@@ -271,7 +310,7 @@ while saved < num_events:
         link_params['diameter'][pump.uid] = None  # Pumps don't have diameter
         link_params['length'][pump.uid] = pump.length if hasattr(pump, 'length') else None
         link_params['roughness'][pump.uid] = None
-        link_params['status'][pump.uid] = str(pump.status)
+        link_params['status'][pump.uid] = str(pump.initstatus)
         link_params['link_type'][pump.uid] = 'PUMP'
         # Add pump-specific parameter
         try:
@@ -287,7 +326,7 @@ while saved < num_events:
             link_params['diameter'][valve.uid] = None
         link_params['length'][valve.uid] = None
         link_params['roughness'][valve.uid] = None
-        link_params['status'][valve.uid] = str(valve.status)
+        link_params['status'][valve.uid] = str(valve.initstatus)
         link_params['link_type'][valve.uid] = f'VALVE_{valve.valve_type}'
         # Add valve-specific parameters
         if hasattr(valve, 'setting'):
