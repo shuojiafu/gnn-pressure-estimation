@@ -1,0 +1,294 @@
+#%%
+import os
+import math
+import pickle
+from typing import Dict, Tuple
+from epynet import Network
+from epynet import epanet2
+import numpy as np
+import pandas as pd
+import networkx as nx
+import sys
+
+# Add the parent directory to path to import epynet_utils
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+from gnn_pressure_estimation.generator.EPYNET import epynet_utils as eutils
+
+# ========= User settings =========
+file_path   = "inputs/ctown.inp"
+out_dir     = "water_pressure_simulation/ctown_data"
+num_events  =  1             # how many valid PKLs to produce
+seed        = 42
+
+# DEMAND SETTINGS (matching GNN approach)
+demand_quantile_lo = 0        # Lower quantile (0-100) or use None for absolute min
+demand_quantile_hi = 60       # Upper quantile (0-100) or use None for absolute max
+use_quantiles = False          # True: use quantiles, False: use absolute min/max
+
+pump_open_prob  = 0.8          # pump OPEN probability
+valve_open_prob = 0.8          # valve OPEN probability
+pump_speed_lo, pump_speed_hi = 0.8, 1.2   # pump speed range
+reservoir_scale_lo, reservoir_scale_hi = 0.5, 2.0
+pressure_ok_lo, pressure_ok_hi = 0.0, 151.0  # discard trials if outside
+# =================================
+
+os.makedirs(out_dir, exist_ok=True)
+rng = np.random.default_rng(seed) if seed is not None else np.random.default_rng()
+
+# ----- small helpers -----
+def _first_multiplier(pattern) -> float:
+    """Get first pattern multiplier (for single-snapshot simulation)."""
+    if pattern is None:
+        return 1.0
+    try:
+        values = pattern.values
+        if values is None or len(values) == 0:
+            return 1.0
+        return float(values[0])
+    except:
+        return 1.0
+
+def _compute_global_demand_range(wn: Network) -> Tuple[float, float]:
+    """
+    Compute GLOBAL demand range across ALL junctions (matching GNN approach).
+
+    This mimics ConfigCreator.py:127-128 where:
+        base_demands = wn.junctions.basedemand.to_numpy()  # ALL junctions
+        demand_lo, demand_hi = get_range(base_demands, lo, hi, is_quantile)
+
+    Returns:
+        (demand_lo, demand_hi): Single global range used for ALL junctions
+    """
+    all_base_demands = []
+
+    for junc in wn.junctions:
+        base_demand = float(junc.basedemand)
+        if base_demand > 0:
+            all_base_demands.append(base_demand)
+
+    if len(all_base_demands) == 0:
+        return (0.0, 0.0)
+
+    all_base_demands = np.array(all_base_demands)
+
+    # Matching get_range() function from ConfigCreator.py:73-92
+    if use_quantiles:
+        demand_lo = float(np.percentile(all_base_demands, demand_quantile_lo))
+        demand_hi = float(np.percentile(all_base_demands, demand_quantile_hi))
+    else:
+        demand_lo = float(all_base_demands.min())
+        demand_hi = float(all_base_demands.max())
+
+    print(f"Global demand range: [{demand_lo:.4f}, {demand_hi:.4f}]")
+    return (demand_lo, demand_hi)
+
+def _valve_setting_bounds_if_available(v) -> Tuple[float, float] | None:
+    """Return (min,max) if the valve exposes explicit bounds, else None (we'll skip setting)."""
+    # For EPyNet, we'll use a simple heuristic based on valve type
+    # This is a simplified version; adjust based on actual valve types in your network
+    try:
+        current_setting = float(v.setting)
+        if current_setting > 0:
+            # Return a range around current setting
+            return (current_setting * 0.5, current_setting * 1.5)
+    except:
+        pass
+    return None
+
+# ----- Compute SINGLE GLOBAL demand range from pristine network -----
+base_wn = Network(file_path)
+global_demand_lo, global_demand_hi = _compute_global_demand_range(base_wn)
+
+# ----- generate until we have num_events valid files -----
+saved = 0
+attempts = 0
+while saved < num_events:
+    attempts += 1
+    wn = Network(file_path)
+
+    # 1) Junction demand: EACH junction randomized within SAME GLOBAL [min,max]
+    #    This matches TokenGeneratorByRange.py:275-287 where:
+    #        new_values = range_lo + tokens * (range_hi - range_lo)
+    #    All junctions use the SAME range_lo and range_hi
+
+    for junc in wn.junctions:
+        base_demand = float(junc.basedemand)
+
+        if base_demand <= 0:
+            continue
+
+        # Random target within GLOBAL range (not per-junction range!)
+        if np.isclose(global_demand_lo, global_demand_hi):
+            target = global_demand_lo
+        else:
+            target = float(rng.uniform(global_demand_lo, global_demand_hi))
+        target = max(0.0, target)
+
+        # Get pattern multiplier
+        pattern = junc.pattern if hasattr(junc, 'pattern') else None
+        m = _first_multiplier(pattern)
+        m_safe = 1.0 if m <= 0.0 else m
+
+        # Set new base demand: target = new_base * m
+        new_base = target / m_safe
+        junc.basedemand = float(max(0.0, new_base))
+
+    # 2) Tank levels in [min_level, max_level]
+    for tank in wn.tanks:
+        lo, hi = float(tank.minlevel), float(tank.maxlevel)
+        if hi > lo:
+            eutils.set_object_value_wo_ierror(tank, epanet2.EN_TANKLEVEL, float(rng.uniform(lo, hi)))
+
+    # 3) Reservoir head × [0.5, 2.0]
+    for res in wn.reservoirs:
+        try:
+            # In EPyNet, reservoir head is accessed via elevation or head property
+            current_head = float(res.head) if hasattr(res, 'head') else float(res.elevation)
+            new_head = current_head * float(rng.uniform(reservoir_scale_lo, reservoir_scale_hi))
+            eutils.set_object_value_wo_ierror(res, epanet2.EN_ELEVATION, new_head)
+        except Exception as e:
+            print(f"Warning: Could not set reservoir head: {e}")
+
+    # 4) Pumps: status (p=0.8 OPEN), speed ∈ [0.8,1.2]
+    for pump in wn.pumps:
+        # Set initial status
+        new_status = 1 if rng.random() < pump_open_prob else 0
+        eutils.set_object_value_wo_ierror(pump, epanet2.EN_INITSTATUS, new_status)
+
+        # Set pump speed (this is the main reason for using EPyNet!)
+        new_speed = float(rng.uniform(pump_speed_lo, pump_speed_hi))
+        eutils.set_object_value_wo_ierror(pump, epanet2.EN_PUMPSPEED, new_speed)
+
+    # 5) Valves: status (p=0.8 OPEN), setting within explicit [min,max] if available
+    for valve in wn.valves:
+        # Set initial status
+        new_status = 1 if rng.random() < valve_open_prob else 0
+        eutils.set_object_value_wo_ierror(valve, epanet2.EN_INITSTATUS, new_status)
+
+        bounds = _valve_setting_bounds_if_available(valve)
+        if bounds is not None:
+            lo, hi = bounds
+            try:
+                new_setting = float(rng.uniform(lo, hi))
+                eutils.set_object_value_wo_ierror(valve, epanet2.EN_INITSETTING, new_setting)
+            except Exception:
+                pass
+
+    # 6) One-step hydraulic simulation (matching GNN approach - Executorv7.py:193-199)
+    # Set all time parameters to 1 second for single-snapshot steady-state
+    wn.ep.ENsettimeparam(epanet2.EN_DURATION, 1)
+    wn.ep.ENsettimeparam(epanet2.EN_HYDSTEP, 1)
+    wn.ep.ENsettimeparam(epanet2.EN_QUALSTEP, 1)
+    wn.ep.ENsettimeparam(epanet2.EN_PATTERNSTEP, 1)
+    wn.ep.ENsettimeparam(epanet2.EN_PATTERNSTART, 1)
+    wn.ep.ENsettimeparam(epanet2.EN_REPORTSTEP, 1)
+    wn.ep.ENsettimeparam(epanet2.EN_REPORTSTART, 1)
+    wn.ep.ENsettimeparam(epanet2.EN_RULESTEP, 1)
+
+    # Run simulation
+    try:
+        wn.solve()
+    except Exception as e:
+        print(f"Simulation failed: {e}")
+        continue  # abandon this trial
+
+    # 7) Pressure filter: discard if any pressure outside [0,151]
+    pressures = wn.nodes.pressure.values
+    if (pressures.min() < pressure_ok_lo) or (pressures.max() > pressure_ok_hi):
+        continue  # abandon this trial
+
+    # 8) Build DIRECTED graph + dataframes and save
+    G = eutils.get_networkx_graph(wn, include_reservoir=True, graph_type='multi_directed')
+
+    # Node data
+    heads = wn.nodes.head.values
+    node_ids = wn.nodes.uid.tolist()
+    node_data = pd.DataFrame({
+        "pressure": wn.nodes.pressure.values,
+        "head": heads
+    }, index=node_ids)
+
+    # Realized demand at t0 (base * first_multiplier)
+    realized = {}
+    for junc in wn.junctions:
+        base_demand = float(junc.basedemand)
+        pattern = junc.pattern if hasattr(junc, 'pattern') else None
+        multiplier = _first_multiplier(pattern)
+        realized[junc.uid] = base_demand * multiplier
+    node_data["demand_t0"] = pd.Series(realized)
+
+    # Elevations
+    elevations = {}
+    for node in wn.nodes:
+        if hasattr(node, 'elevation'):
+            elevations[node.uid] = node.elevation
+        else:
+            # For reservoirs, use head as elevation
+            elevations[node.uid] = node.head if hasattr(node, 'head') else 0.0
+    node_data["elevation"] = pd.Series(elevations)
+
+    # Link simulation outputs
+    link_ids = wn.links.uid.tolist()
+    link_data = pd.DataFrame({
+        "flowrate": wn.links.flow.values,
+        "velocity": wn.links.velocity.values
+    }, index=link_ids)
+
+    # Add link input features (parameters that were randomized)
+    link_params = {
+        'diameter': {},
+        'length': {},
+        'roughness': {},
+        'status': {},
+        'link_type': {}
+    }
+
+    # Pipes
+    for pipe in wn.pipes:
+        link_params['diameter'][pipe.uid] = pipe.diameter
+        link_params['length'][pipe.uid] = pipe.length
+        link_params['roughness'][pipe.uid] = pipe.roughness
+        link_params['status'][pipe.uid] = str(pipe.initstatus)
+        link_params['link_type'][pipe.uid] = 'PIPE'
+
+    # Pumps
+    for pump in wn.pumps:
+        link_params['diameter'][pump.uid] = None  # Pumps don't have diameter
+        link_params['length'][pump.uid] = pump.length if hasattr(pump, 'length') else None
+        link_params['roughness'][pump.uid] = None
+        link_params['status'][pump.uid] = str(pump.initstatus)
+        link_params['link_type'][pump.uid] = 'PUMP'
+        # Add pump-specific parameter
+        try:
+            link_data.loc[pump.uid, 'pump_speed'] = pump.speed
+        except:
+            link_data.loc[pump.uid, 'pump_speed'] = None
+
+    # Valves
+    for valve in wn.valves:
+        try:
+            link_params['diameter'][valve.uid] = valve.diameter
+        except:
+            link_params['diameter'][valve.uid] = None
+        link_params['length'][valve.uid] = None
+        link_params['roughness'][valve.uid] = None
+        link_params['status'][valve.uid] = str(valve.initstatus)
+        link_params['link_type'][valve.uid] = f'VALVE_{valve.valve_type}'
+        # Add valve-specific parameters
+        if hasattr(valve, 'setting'):
+            link_data.loc[valve.uid, 'valve_setting'] = valve.setting
+        else:
+            link_data.loc[valve.uid, 'valve_setting'] = None
+
+    # Add all link parameters to link_data
+    for param_name, param_dict in link_params.items():
+        link_data[param_name] = pd.Series(param_dict)
+
+    out_path = os.path.join(out_dir, f"data_{saved}.pkl")
+    with open(out_path, "wb") as f:
+        pickle.dump((G, link_data, node_data), f)
+
+    saved += 1
+    print(f"Saved {saved}/{num_events} (attempt {attempts})")
+
+print(f"\nComplete! Generated {num_events} valid scenarios in {attempts} attempts.")
