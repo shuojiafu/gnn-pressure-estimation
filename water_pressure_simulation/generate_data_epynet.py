@@ -89,62 +89,33 @@ def _compute_global_demand_range(wn: wntr.network.WaterNetworkModel) -> Tuple[fl
     return (demand_lo, demand_hi)
 
 
-def _get_valve_bounds_from_inp(wn_epynet, valve) -> Tuple[float, float] | None:
+def _get_global_valve_setting_range(wn) -> Tuple[float, float]:
     """
-    Get min/max bounds for valve setting from the INP file.
+    Find the global min/max valve settings across ALL valves in the INP file.
 
-    For valves in EPANET, the setting interpretation depends on valve type:
-    - PRV (Pressure Reducing Valve): setting is pressure (psi or m)
-    - PSV (Pressure Sustaining Valve): setting is pressure (psi or m)
-    - FCV (Flow Control Valve): setting is flow rate
-    - TCV (Throttle Control Valve): setting is loss coefficient
-    - PBV (Pressure Breaker Valve): setting is pressure (psi or m)
-    - GPV (General Purpose Valve): setting is loss coefficient
-
-    We'll read the original setting from the INP file and create a range around it.
+    Returns:
+        (min_setting, max_setting): Global range for all valve settings
     """
-    try:
-        valve_type = valve.valve_type
-        original_setting = float(valve.setting)
+    valve_settings = []
 
-        # Handle edge case: if original setting is 0 or very small, use default ranges
-        if abs(original_setting) < 1e-6:
-            if valve_type in ['PRV', 'PSV', 'PBV']:  # Pressure valves
-                return (10.0, 100.0)  # Default pressure range
-            elif valve_type == 'FCV':  # Flow Control Valve
-                return (0.1, 10.0)  # Default flow range
-            elif valve_type in ['TCV', 'GPV']:  # Loss coefficient valves
-                return (0.0, 10.0)  # Default loss coefficient range
-            else:
-                return (0.1, 10.0)  # Default fallback
+    for valve in wn.valves:
+        try:
+            setting = float(valve.setting)
+            if setting > 0:  # Only consider positive settings
+                valve_settings.append(setting)
+        except:
+            pass
 
-        # Define reasonable ranges based on valve type
-        # We'll use a percentage of the original setting to create the range
-        if valve_type in ['PRV', 'PSV', 'PBV']:  # Pressure valves
-            # Pressure range: 50% to 150% of original setting
-            min_val = max(0.1, original_setting * 0.5)
-            max_val = max(min_val + 0.1, original_setting * 1.5)  # Ensure max > min
-        elif valve_type == 'FCV':  # Flow Control Valve
-            # Flow range: 50% to 150% of original setting
-            min_val = max(0.001, original_setting * 0.5)
-            max_val = max(min_val + 0.001, original_setting * 1.5)
-        elif valve_type in ['TCV', 'GPV']:  # Loss coefficient valves
-            # Loss coefficient range: use reasonable bounds
-            min_val = max(0.0, original_setting * 0.5)
-            max_val = max(min_val + 0.1, original_setting * 2.0)
-        else:
-            # Default fallback
-            min_val = max(0.001, original_setting * 0.5)
-            max_val = max(min_val + 0.1, original_setting * 1.5)
+    if len(valve_settings) == 0:
+        # Default range if no valves or all settings are 0
+        print("Warning: No valid valve settings found, using default range [0.1, 100.0]")
+        return (0.1, 100.0)
 
-        # Final sanity check
-        if max_val <= min_val:
-            max_val = min_val + 1.0
+    min_setting = float(np.min(valve_settings))
+    max_setting = float(np.max(valve_settings))
 
-        return (min_val, max_val)
-    except Exception as e:
-        print(f"Warning: Could not get valve bounds for {valve.uid}: {e}")
-        return None
+    print(f"Global valve setting range: [{min_setting:.4f}, {max_setting:.4f}]")
+    return (min_setting, max_setting)
 
 
 def solve_epynet(wn):
@@ -167,6 +138,10 @@ def solve_epynet(wn):
 # ----- Compute SINGLE GLOBAL demand range from pristine network -----
 base_wn_wntr = wntr.network.WaterNetworkModel(file_path)
 global_demand_lo, global_demand_hi = _compute_global_demand_range(base_wn_wntr)
+
+# ----- Compute GLOBAL valve setting range from pristine network -----
+base_wn_epynet = Network(file_path)
+global_valve_setting_lo, global_valve_setting_hi = _get_global_valve_setting_range(base_wn_epynet)
 
 # ----- generate until we have num_events valid files -----
 saved = 0
@@ -264,7 +239,7 @@ while saved < num_events:
         pump.speed = speed_multiplier
         pump_speed_multipliers[pump.uid] = speed_multiplier
 
-    # 5) Valves: status (p=0.8 OPEN), and if OPEN, randomize setting within INP bounds
+    # 5) Valves: status (p=0.8 OPEN), and if OPEN, randomize setting within global range
     valve_settings = {}
 
     # Build a temporary graph to check connectivity when closing valves
@@ -288,20 +263,11 @@ while saved < num_events:
         else:
             valve.initstatus = 1  # OPEN
 
-        # If valve is open, randomize its setting within bounds from INP
+        # If valve is open, randomize its setting within global range
         if should_open:
-            bounds = _get_valve_bounds_from_inp(wn, valve)
-            if bounds is not None:
-                lo, hi = bounds
-                try:
-                    new_setting = float(rng.uniform(lo, hi))
-                    eutils.set_object_value_wo_ierror(valve, epanet2.EN_INITSETTING, new_setting)
-                    valve_settings[valve.uid] = new_setting
-                except Exception as e:
-                    print(f"Warning: Could not set valve setting for {valve.uid}: {e}")
-                    valve_settings[valve.uid] = float(valve.setting)
-            else:
-                valve_settings[valve.uid] = float(valve.setting)
+            new_setting = float(rng.uniform(global_valve_setting_lo, global_valve_setting_hi))
+            eutils.set_object_value_wo_ierror(valve, epanet2.EN_INITSETTING, new_setting)
+            valve_settings[valve.uid] = new_setting
 
     # 6) Set simulation parameters for single-step simulation (matching Executorv7.py:193-199)
     wn.ep.ENsettimeparam(epanet2.EN_DURATION, 1)
