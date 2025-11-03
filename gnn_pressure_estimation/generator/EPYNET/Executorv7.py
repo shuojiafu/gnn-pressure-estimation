@@ -201,14 +201,29 @@ class WDNExecutor(object):
         support_node_attr_keys = ["demand", "head", "pressure"]
         support_link_attr_keys = ["velocity", "flow"]  #'flowrate','status',
 
+        # Store original basedemand values to preserve zero demands
+        original_basedemands = [junc.basedemand for junc in self.wn.junctions]
+
         for i, junc in enumerate(self.wn.junctions):
             if self.gen_demand:
-                # this only affects if we have zero/one demand category
-                if not self.replace_nonzero_basedmd or (junc.basedemand != 0 and self.replace_nonzero_basedmd):
-                    junc.basedemand = 1.0
+                # Check if original demand is zero (preserve zero demands)
+                original_demand = original_basedemands[i]
+                is_zero_demand = abs(original_demand) < 1e-10  # Using small threshold for floating point comparison
 
-                junc.pattern = str(self.custom_base_index + i)
-                junc.pattern.values = [junc_demands[i]]
+                if is_zero_demand:
+                    # Original demand is zero, keep it as zero
+                    junc.basedemand = 0.0
+                    junc.pattern = str(self.custom_base_index + i)
+                    junc.pattern.values = [0.0]
+                else:
+                    # Original demand is non-zero, apply randomized demand
+                    # this only affects if we have zero/one demand category
+                    if not self.replace_nonzero_basedmd or (junc.basedemand != 0 and self.replace_nonzero_basedmd):
+                        junc.basedemand = 1.0
+
+                    junc.pattern = str(self.custom_base_index + i)
+                    junc.pattern.values = [junc_demands[i]]
+
                 # In EPANET <=2.2, we have no way to delete the demand category if there are more than 1 exists...
                 # Thus, we copy the base_demand and pattern into each demand category
                 eutils.ENsetdemandpatterntoallcategories(self.wn, junc.index, junc.basedemand, junc.pattern.index)
